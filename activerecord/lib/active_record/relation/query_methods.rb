@@ -890,6 +890,120 @@ module ActiveRecord
       self.left_outer_joins_values |= args
       self
     end
+    
+    # Performs a custom join with explicit ON conditions.
+    #
+    # This method can join to a table or a subquery (ActiveRecord relation) with custom join conditions.
+    #
+    # Joining to a table:
+    #   User.joins_on(:posts, on: { id: :user_id })
+    #   # SELECT "users".* FROM "users" INNER JOIN "posts" ON "users"."id" = "posts"."user_id"
+    #
+    # Joining to a subquery with an alias:
+    #   recent_posts = Post.where(published: true)
+    #   User.joins_on(recent_posts, as: 'published_posts', on: { id: :author_id })
+    #   # SELECT "users".* FROM "users" INNER JOIN (SELECT * FROM posts WHERE published = 't') 
+    #   # AS published_posts ON "users"."id" = "published_posts"."author_id"
+    #
+    # The first argument can be:
+    #   - Symbol or String: representing a table name
+    #   - ActiveRecord::Relation: representing a subquery
+    #
+    # The +as+ parameter allows you to specify a name for the joined table or subquery.
+    # This is optional but recommended when joining to a subquery.
+    #
+    # The +on+ parameter specifies the join condition as a hash where:
+    #   - keys represent columns from the left side of the join (the main table)
+    #   - values represent columns from the right side (the joined table or subquery)
+    #
+    # The +type+ parameter determines the type of join and can be one of:
+    #   - :inner (default) - INNER JOIN
+    #   - :left or :left_outer - LEFT OUTER JOIN
+    #   - :right or :right_outer - RIGHT OUTER JOIN
+    #   - :full or :full_outer - FULL OUTER JOIN
+    def joins_on(target, as: nil, on: {}, type: :inner)
+      spawn.joins_on!(target, as: as, on: on, type: type)
+    end
+    
+    def joins_on!(target, as: nil, on: {}, type: :inner) # :nodoc:
+      join_data = {
+        relation: target, # 'relation' is a bit of a misnomer now, but kept for compatibility
+        as: as,
+        on: on,
+        type: type
+      }
+      self.joins_on_values |= [join_data]
+      self
+    end
+    
+    # Helper for translating join type symbol to Arel node class
+    # This maps the user-friendly join type symbols to Arel's join node classes
+    def determine_join_type(type) # :nodoc:
+      case type.to_sym
+      when :inner
+        Arel::Nodes::InnerJoin
+      when :left, :left_outer
+        Arel::Nodes::OuterJoin
+      when :right, :right_outer
+        Arel::Nodes::RightOuterJoin
+      when :full, :full_outer
+        Arel::Nodes::FullOuterJoin
+      else
+        raise ArgumentError, "Unsupported join type: #{type}"
+      end
+    end
+    
+    # Helper for building ON conditions from various formats
+    # Converts Ruby hash conditions to Arel nodes for SQL generation
+    def build_on_conditions(conditions, left_table, right_table) # :nodoc:
+      case conditions
+      when Hash
+        return nil if conditions.empty?
+        
+        # Build equi-join conditions from hash
+        conditions.map do |left_column, right_column|
+          left_table[left_column].eq(right_table[right_column])
+        end.reduce { |memo, condition| memo.and(condition) }
+      when Arel::Nodes::Node
+        # Pass through pre-built Arel node
+        conditions
+      when nil, {}
+        # Try to determine appropriate default join condition
+        if model && right_table.name && !right_table.name.include?("subquery")
+          # For standard tables, use primary key = foreign key pattern
+          begin
+            fk_column = nil
+            
+            # Try model's foreign key first
+            fk_candidate = model.model_name.to_s.foreign_key
+            if right_table.columns.include?(fk_candidate) 
+              fk_column = fk_candidate
+            end
+            
+            # If not found, try the other direction
+            if !fk_column && right_table.name.respond_to?(:singularize)
+              fk_candidate = right_table.name.to_s.singularize + "_id"
+              if left_table.columns.include?(fk_candidate)
+                return left_table[fk_candidate].eq(right_table[:id])
+              end
+            end
+            
+            # If foreign key found, use it
+            if fk_column
+              return left_table[:id].eq(right_table[fk_column])
+            end
+          rescue => e
+            # If any error occurs during default condition detection, 
+            # fall back to requiring explicit conditions
+          end
+        end
+        
+        # If we can't determine default conditions, require explicit conditions
+        raise ArgumentError, "Join conditions must be specified explicitly with the :on option"
+      else
+        raise ArgumentError, "Unsupported ON condition format: #{conditions.class.name}. Please use a hash for conditions."
+      end
+    end
 
     # Returns a new relation, which is the result of filtering the current relation
     # according to the conditions in the arguments.
@@ -1878,7 +1992,7 @@ module ActiveRecord
       end
 
       def build_joins(join_sources, aliases = nil)
-        return join_sources if joins_values.empty? && left_outer_joins_values.empty?
+        return join_sources if joins_values.empty? && left_outer_joins_values.empty? && joins_on_values.empty?
 
         buckets, join_type = build_join_buckets
 
@@ -1893,6 +2007,48 @@ module ActiveRecord
           alias_tracker = alias_tracker(leading_joins + join_nodes, aliases)
           join_dependency = construct_join_dependency(named_joins, join_type)
           join_sources.concat(join_dependency.join_constraints(stashed_joins, alias_tracker, references_values))
+        end
+        
+        # Process joins_on values - custom joins with specified conditions
+        unless joins_on_values.empty?
+          joins_on_values.each do |join_data|
+            target = join_data[:relation]
+            alias_name = join_data[:as]
+            on_conditions = join_data[:on]
+            join_type_value = determine_join_type(join_data[:type])
+            
+            # Handle the join target (table or relation)
+            join_target = case target
+            when Symbol, String
+              # For table name, create an Arel table
+              Arel::Table.new(target.to_s)
+            when ActiveRecord::Relation
+              # For relation, create a subquery
+              target_sql = target.arel
+              alias_name ? target_sql.as(alias_name) : target_sql
+            else
+              raise ArgumentError, "Unsupported join target type: #{target.class.name}. Expected Symbol, String, or ActiveRecord::Relation."
+            end
+            
+            # Create a reference to the target for ON conditions
+            target_ref = if alias_name
+                          Arel::Table.new(alias_name.to_s)
+                        elsif target.is_a?(Symbol) || target.is_a?(String)
+                          Arel::Table.new(target.to_s)
+                        else
+                          # For unaliased subqueries, referencing is more complex
+                          # Use a synthesized reference for conditions
+                          join_target.left
+                        end
+            
+            # Build ON conditions
+            on_clause = build_on_conditions(on_conditions, table, target_ref)
+            
+            # Create the appropriate join node
+            join_node = table.join(join_target, join_type_value).on(on_clause)
+            
+            join_sources << join_node.join_sources.first
+          end
         end
 
         join_sources.concat(join_nodes) unless join_nodes.empty?
