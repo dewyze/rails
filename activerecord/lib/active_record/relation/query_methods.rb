@@ -871,6 +871,10 @@ module ActiveRecord
     end
 
     def joins!(*args) # :nodoc:
+      if args.last.is_a?(Hash) && args.last.key?(:on)
+        options = args.pop
+        args << build_on_join(args.pop, options[:on])
+      end
       self.joins_values |= args
       self
     end
@@ -1893,6 +1897,25 @@ module ActiveRecord
 
         join_sources.concat(join_nodes) unless join_nodes.empty?
         join_sources
+      end
+
+      def build_on_join(table_name, on)
+        unless table_name.is_a?(Symbol)
+          raise ArgumentError, "table name for joins with on: must be a Symbol, got #{table_name.inspect}"
+        end
+
+        join_table = Arel::Table.new(table_name)
+        conditions = on.map do |column, value|
+          if value.is_a?(Symbol)
+            join_table[column].eq(table[value])
+          else
+            join_table[column].eq(value)
+          end
+        end
+
+        table.join(join_table, Arel::Nodes::InnerJoin).on(
+          *conditions
+        ).join_sources.first
       end
 
       def build_select(arel)

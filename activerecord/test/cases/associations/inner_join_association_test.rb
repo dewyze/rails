@@ -241,4 +241,31 @@ class InnerJoinAssociationTest < ActiveRecord::TestCase
     assert_match %r(#{Regexp.escape(quote_table_name("friendships.friend_id"))}), sql
     assert_match %r(#{Regexp.escape(quote_table_name("friendships.follower_id"))}), sql
   end
+
+  test "joins with on: places the condition in the ON clause, not WHERE" do
+    sql = Post.joins(:comments, on: { post_id: :id }).to_sql
+    assert_match(/INNER JOIN/i, sql)
+    assert_no_match(/WHERE/i, sql)
+  end
+
+  test "joins with on: returns posts matching the join condition" do
+    posts_with_comments = Post.joins(:comments, on: { post_id: :id }).distinct
+    assert_includes posts_with_comments, posts(:welcome)
+    assert_includes posts_with_comments, posts(:thinking)
+    assert_not_includes posts_with_comments, posts(:authorless)
+  end
+
+  test "joins with on: filters by multiple conditions" do
+    posts_with_special_comments = Post.joins(:comments, on: { post_id: :id, type: "SpecialComment" }).distinct
+    assert_includes posts_with_special_comments, posts(:thinking)
+    assert_not_includes posts_with_special_comments, posts(:welcome)
+    assert_not_includes posts_with_special_comments, posts(:authorless)
+  end
+
+  test "joins with on: chains with association joins" do
+    marys_commented_posts = Post.joins(:author).joins(:comments, on: { post_id: :id })
+      .where(authors: { name: "Mary" }).distinct
+
+    assert_equal [posts(:eager_other)], marys_commented_posts.to_a
+  end
 end
