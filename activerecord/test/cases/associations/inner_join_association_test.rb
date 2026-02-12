@@ -263,9 +263,10 @@ class InnerJoinAssociationTest < ActiveRecord::TestCase
   end
 
   test "joins with on: chains with association joins" do
-    marys_commented_posts = Post.joins(:author).joins(:comments, on: { post_id: :id })
-      .where(authors: { name: "Mary" }).distinct
+    # Mary has 3 posts but only eager_other has comments
+    posts = Post.joins(:author).joins(:comments, on: { post_id: :id })
+      .where(authors: { name: "Mary" })
 
-    assert_equal [posts(:eager_other)], marys_commented_posts.to_a
+    assert_equal [posts(:eager_other)], posts.distinct.to_a
   end
 end
