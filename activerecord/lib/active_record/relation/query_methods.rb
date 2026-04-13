@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "active_record/relation/from_clause"
+require "active_record/relation/join_clause"
 require "active_record/relation/query_attribute"
 require "active_record/relation/where_clause"
 require "active_support/core_ext/array/wrap"
@@ -865,7 +866,44 @@ module ActiveRecord
     #
     #   User.joins("LEFT JOIN bookmarks ON bookmarks.bookmarkable_type = 'Post' AND bookmarks.user_id = users.id")
     #   # SELECT "users".* FROM "users" LEFT JOIN bookmarks ON bookmarks.bookmarkable_type = 'Post' AND bookmarks.user_id = users.id
-    def joins(*args)
+    #
+    # You can also join a table with explicit join conditions using the +on+ option.
+    # This provides a Ruby-native syntax for specifying the ON clause without raw SQL:
+    #
+    #   Post.joins(:comments, on: { post_id: :id })
+    #   # SELECT "posts".* FROM "posts"
+    #   # INNER JOIN "comments" ON "comments"."post_id" = "posts"."id"
+    #
+    # Multiple join conditions:
+    #
+    #   Post.joins(:comments, on: { post_id: :id, blog_id: :blog_id })
+    #   # SELECT "posts".* FROM "posts"
+    #   # INNER JOIN "comments" ON "comments"."post_id" = "posts"."id"
+    #   #   AND "comments"."blog_id" = "posts"."blog_id"
+    #
+    # The keys in the +on+ hash reference columns on the joined table, while
+    # the values reference columns on the source table.
+    #
+    # An alias can be provided with the +as+ option, which is required when
+    # joining the same table multiple times:
+    #
+    #   Post.joins(:comments, on: { post_id: :id }, as: :recent_comments)
+    #   # SELECT "posts".* FROM "posts"
+    #   # INNER JOIN "comments" "recent_comments" ON "recent_comments"."post_id" = "posts"."id"
+    #
+    # A subquery can also be joined by passing an ActiveRecord::Relation as the
+    # first argument. An +as+ alias is required in this case:
+    #
+    #   Post.joins(Comment.where(label: 1), on: { post_id: :id }, as: :labeled_comments)
+    #   # SELECT "posts".* FROM "posts"
+    #   # INNER JOIN (SELECT "comments".* FROM "comments" WHERE "comments"."label" = 1)
+    #   #   "labeled_comments" ON "labeled_comments"."post_id" = "posts"."id"
+    def joins(*args, **options)
+      if options.key?(:on)
+        args = [build_join_clause(args, options[:on], options[:as])]
+      elsif options.any?
+        args << options
+      end
       check_if_method_has_arguments!(__callee__, args)
       spawn.joins!(*args)
     end
@@ -880,7 +918,17 @@ module ActiveRecord
     #   User.left_outer_joins(:posts)
     #   # SELECT "users".* FROM "users" LEFT OUTER JOIN "posts" ON "posts"."user_id" = "users"."id"
     #
-    def left_outer_joins(*args)
+    # Accepts the same +on+ and +as+ options as #joins for explicit join conditions:
+    #
+    #   Post.left_outer_joins(:comments, on: { post_id: :id })
+    #   # SELECT "posts".* FROM "posts"
+    #   # LEFT OUTER JOIN "comments" ON "comments"."post_id" = "posts"."id"
+    def left_outer_joins(*args, **options)
+      if options.key?(:on)
+        args = [build_join_clause(args, options[:on], options[:as])]
+      elsif options.any?
+        args << options
+      end
       check_if_method_has_arguments!(__callee__, args)
       spawn.left_outer_joins!(*args)
     end
@@ -1825,6 +1873,8 @@ module ActiveRecord
           left_joins = select_named_joins(left_outer_joins_values, stashed_left_joins) do |left_join|
             if left_join.is_a?(CTEJoin)
               buckets[:join_node] << build_with_join_node(left_join.name, Arel::Nodes::OuterJoin)
+            elsif left_join.is_a?(Relation::JoinClause)
+              buckets[:join_node] << left_join.build_join_node(table, Arel::Nodes::OuterJoin)
             else
               raise ArgumentError, "only Hash, Symbol and Array are allowed"
             end
@@ -1862,6 +1912,8 @@ module ActiveRecord
             buckets[:join_node] << join
           elsif join.is_a?(CTEJoin)
             buckets[:join_node] << build_with_join_node(join.name)
+          elsif join.is_a?(Relation::JoinClause)
+            buckets[:join_node] << join.build_join_node(table, Arel::Nodes::InnerJoin)
           else
             raise "unknown class: %s" % join.class.name
           end
@@ -1945,6 +1997,16 @@ module ActiveRecord
         else
           raise ArgumentError, "Unsupported argument type: `#{value}` #{value.class}"
         end
+      end
+
+      def build_join_clause(args, on, alias_name)
+        raise ArgumentError, "`on` must be a Hash mapping join columns to source columns" unless on.is_a?(Hash)
+
+        source = args.size == 1 ? args.first : raise(
+          ArgumentError, "expected exactly one table or relation argument when using `on:`, got #{args.size}"
+        )
+
+        Relation::JoinClause.new(source, on, alias_name)
       end
 
       def build_with_join_node(name, kind = Arel::Nodes::InnerJoin)

@@ -1,0 +1,177 @@
+{
+  "project": "Rails joins on: and as: support",
+  "repo": "dewyze/rails",
+  "remote": "fork",
+  "base_branch": "main",
+  "branch_prefix": "feature/joins-on",
+
+  "epics": [
+    {
+      "id": "E1",
+      "title": "Core Inner Join with on:",
+      "cards": [
+        {
+          "id": "C1",
+          "title": "Basic joins(:table, on: { col: :col }) support",
+          "status": "IN_PROGRESS",
+          "branch": "feature/joins-on-basic",
+          "pr": "https://github.com/dewyze/rails/pull/1",
+          "description": "Add the ability to pass on: to joins for explicit table joins with custom ON conditions. Supports symbol values (base table column refs) and literal values (strings, numbers, booleans).",
+          "acceptance_criteria": [
+            "Post.joins(:comments, on: { post_id: :id }).to_sql produces INNER JOIN \"comments\" ON \"comments\".\"post_id\" = \"posts\".\"id\"",
+            "Post.joins(:comments, on: { post_id: :id, type: 'SpecialComment' }).to_sql produces AND condition",
+            "Chaining with association joins works: Post.joins(:author).joins(:comments, on: { post_id: :id })",
+            "Returns correct records (not just SQL verification)",
+            "Existing joins behavior unchanged (symbol=association, string=SQL, hash=nested associations)",
+            "Test file: test/cases/associations/explicit_join_test.rb"
+          ],
+          "files_to_modify": [
+            "activerecord/lib/active_record/relation/query_methods.rb"
+          ],
+          "files_to_create": [
+            "activerecord/test/cases/associations/explicit_join_test.rb"
+          ],
+          "implementation_notes": "Modify joins! to detect when last arg is Hash with :on key. Pop the opts hash + table name. Add private build_explicit_join method that creates Arel::Nodes::InnerJoin with Arel::Nodes::On. Store resulting Arel node in joins_values — build_join_buckets already routes Arel::Nodes::Join to the join_node bucket."
+        },
+        {
+          "id": "C2",
+          "title": "Add as: table aliasing support",
+          "status": "TODO",
+          "branch": "feature/joins-on-alias",
+          "pr": null,
+          "description": "Add as: option for table aliasing, enabling self-joins and joining the same table multiple times with different conditions.",
+          "acceptance_criteria": [
+            "Comment.joins(:comments, as: :parents, on: { id: :parent_id }).to_sql produces INNER JOIN \"comments\" \"parents\" ON \"parents\".\"id\" = \"comments\".\"parent_id\"",
+            "Same table joined twice with different aliases works: Post.joins(:comments, as: :c1, on: { post_id: :id, type: 'Comment' }).joins(:comments, as: :c2, on: { post_id: :id, type: 'SpecialComment' })",
+            "ON conditions reference the alias, not the original table name",
+            "as: without on: is rejected (ArgumentError)",
+            "Tests for all above"
+          ],
+          "files_to_modify": [
+            "activerecord/lib/active_record/relation/query_methods.rb",
+            "activerecord/test/cases/associations/explicit_join_test.rb"
+          ],
+          "implementation_notes": "Extend build_explicit_join: when as: is present, use Arel::Table.new(table_name).alias(table_alias). The TableAlias node's [] operator delegates to the underlying table, so ON conditions automatically reference the alias."
+        },
+        {
+          "id": "C3",
+          "title": "Rich predicate support in ON conditions",
+          "status": "TODO",
+          "branch": "feature/joins-on-predicates",
+          "pr": null,
+          "description": "Extend the ON condition hash to support nil (IS NULL), arrays (IN), ranges (BETWEEN/>=), and Arel attributes (cross-table references).",
+          "acceptance_criteria": [
+            "on: { deleted_at: nil } produces IS NULL",
+            "on: { label: [0, 1] } produces IN (0, 1)",
+            "on: { label: 1..5 } produces BETWEEN 1 AND 5",
+            "on: { label: 1.. } produces >= 1 (open-ended range)",
+            "on: { post_id: Comment.arel_table[:id] } produces cross-table equality",
+            "Tests for each predicate type"
+          ],
+          "files_to_modify": [
+            "activerecord/lib/active_record/relation/query_methods.rb",
+            "activerecord/test/cases/associations/explicit_join_test.rb"
+          ],
+          "implementation_notes": "Extend build_explicit_join case statement: Array → attribute.in(value), Range → attribute.between(value), nil falls through to attribute.eq(nil) which the visitor renders as IS NULL. Arel attributes/nodes pass through to eq() unchanged since Arel's quoted_node handles them."
+        }
+      ]
+    },
+    {
+      "id": "E2",
+      "title": "Left Join & Composition",
+      "cards": [
+        {
+          "id": "C4",
+          "title": "left_joins / left_outer_joins with on: and as:",
+          "status": "TODO",
+          "branch": "feature/joins-on-left",
+          "pr": null,
+          "description": "Extend left_joins and left_outer_joins to support on: and as: options, producing LEFT OUTER JOIN with custom ON conditions.",
+          "acceptance_criteria": [
+            "Post.left_joins(:comments, on: { post_id: :id }).to_sql produces LEFT OUTER JOIN",
+            "Post.left_outer_joins(:comments, on: { post_id: :id }) produces same SQL (alias)",
+            "as: works with left joins",
+            "Left join returns all base records including those without matches",
+            "unscope(:left_outer_joins) removes the on: left join",
+            "unscope(:joins) does NOT remove the on: left join",
+            "Tests for all above"
+          ],
+          "files_to_modify": [
+            "activerecord/lib/active_record/relation/query_methods.rb",
+            "activerecord/test/cases/associations/explicit_join_test.rb"
+          ],
+          "implementation_notes": "Modify left_outer_joins! with same detection pattern. Store Arel::Nodes::OuterJoin in left_outer_joins_values (not joins_values) so unscope(:left_outer_joins) works correctly. Modify build_join_buckets: the block processing left_outer_joins_values currently raises on non-Hash/Symbol/Array — add Arel::Nodes::Join handling to route to join_node bucket."
+        },
+        {
+          "id": "C5",
+          "title": "Composition: chaining, merge, includes interaction",
+          "status": "TODO",
+          "branch": "feature/joins-on-composition",
+          "pr": null,
+          "description": "Verify and test that on: joins compose correctly with all other query methods.",
+          "acceptance_criteria": [
+            "Chain on: join with association join: Post.joins(:author).joins(:comments, on: { post_id: :id })",
+            "Chain multiple on: joins together",
+            "merge() preserves on: joins from both relations (same model)",
+            "merge() works cross-model with on: joins",
+            "includes(:assoc) + joins(:table, on: ...) does NOT trigger eager loading",
+            "eager_load works alongside on: joins",
+            "except(:joins) removes inner on: joins",
+            "on: joins work with where, select, group, order, distinct, count",
+            "Tests for all above"
+          ],
+          "files_to_modify": [
+            "activerecord/test/cases/associations/explicit_join_test.rb"
+          ],
+          "implementation_notes": "Mostly testing — the existing pipeline should handle these cases without code changes. merger.rb already partitions non-Hash/Symbol/Array into others and re-adds them. includes interaction works because Arel nodes are not in joined_includes_values (which is includes_values & joins_values — Arel nodes never match symbols). If any tests fail, fix the implementation."
+        }
+      ]
+    },
+    {
+      "id": "E3",
+      "title": "Polish",
+      "cards": [
+        {
+          "id": "C6",
+          "title": "Error handling and edge cases",
+          "status": "TODO",
+          "branch": "feature/joins-on-errors",
+          "pr": null,
+          "description": "Add robust error handling and test edge cases.",
+          "acceptance_criteria": [
+            "joins(on: { post_id: :id }) without table name raises ArgumentError with clear message",
+            "joins(:comments, on: {}) with empty hash raises ArgumentError",
+            "joins(:comments, on: 'not a hash') raises ArgumentError",
+            "joins(:comments, as: :c) without on: raises ArgumentError",
+            "joins(123, on: { ... }) with non-symbol/string table raises ArgumentError",
+            "Tests for all error cases"
+          ],
+          "files_to_modify": [
+            "activerecord/lib/active_record/relation/query_methods.rb",
+            "activerecord/test/cases/associations/explicit_join_test.rb"
+          ],
+          "implementation_notes": "Add validation in build_explicit_join and at the detection point in joins!/left_outer_joins!. Follow Rails convention: raise ArgumentError with descriptive messages."
+        },
+        {
+          "id": "C7",
+          "title": "Documentation and CHANGELOG",
+          "status": "TODO",
+          "branch": "feature/joins-on-docs",
+          "pr": null,
+          "description": "Add RDoc to public methods and CHANGELOG entry.",
+          "acceptance_criteria": [
+            "RDoc on joins method includes on: and as: examples with SQL output",
+            "RDoc on left_outer_joins method includes on: and as: examples",
+            "CHANGELOG entry at top of activerecord/CHANGELOG.md following Rails format",
+            "CHANGELOG includes code examples showing the feature"
+          ],
+          "files_to_modify": [
+            "activerecord/lib/active_record/relation/query_methods.rb",
+            "activerecord/CHANGELOG.md"
+          ],
+          "implementation_notes": "Follow Rails RDoc conventions: # comments, +code+ for inline refs, indented code examples with SQL output in comments. CHANGELOG: *   prefix, 4-space indent body, fenced code blocks, *Author Name* attribution."
+        }
+      ]
+    }
+  ]
+}
