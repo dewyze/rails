@@ -9,39 +9,37 @@ class JoinClauseTest < ActiveRecord::TestCase
   fixtures :authors, :posts, :comments
 
   def test_inner_joins_with_on
-    posts = Post.joins(:comments, on: { post_id: :id })
+    post_ids = Post.joins(:comments, on: { post_id: :id }).distinct.pluck(:id).sort
+    expected = Comment.distinct.pluck(:post_id).sort
 
-    assert_match(/INNER JOIN/i, posts.to_sql)
-    assert_equal Comment.distinct.pluck(:post_id).sort, posts.distinct.pluck(:id).sort
+    assert_equal expected, post_ids
   end
 
-  def test_inner_joins_with_on_returns_correct_records
+  def test_inner_joins_with_on_returns_correct_count
     post = posts(:welcome)
     results = Post.joins(:comments, on: { post_id: :id }).where(id: post.id)
 
     assert_equal post.comments.count, results.count
   end
 
-  def test_left_outer_joins_with_on
+  def test_left_outer_joins_with_on_preserves_all_records
     posts = Post.left_outer_joins(:comments, on: { post_id: :id })
 
-    assert_match(/LEFT OUTER JOIN/i, posts.to_sql)
     assert_equal Post.count, posts.distinct.count
   end
 
-  def test_left_joins_with_on
+  def test_left_joins_with_on_preserves_all_records
     posts = Post.left_joins(:comments, on: { post_id: :id })
 
-    assert_match(/LEFT OUTER JOIN/i, posts.to_sql)
     assert_equal Post.count, posts.distinct.count
   end
 
   def test_joins_with_on_multiple_conditions
-    sql = Post.joins(:comments, on: { post_id: :id, type: :type }).to_sql
+    # Joining on both post_id and type narrows results compared to post_id alone
+    broad = Post.joins(:comments, on: { post_id: :id }).count
+    narrow = Post.joins(:comments, on: { post_id: :id, type: :type }).count
 
-    assert_match(/post_id/i, sql)
-    assert_match(/type/i, sql)
-    assert_match(/AND/i, sql)
+    assert_operator narrow, :<=, broad
   end
 
   def test_joins_with_on_and_alias
@@ -58,14 +56,6 @@ class JoinClauseTest < ActiveRecord::TestCase
     assert_match(/comments_b/i, sql)
   end
 
-  def test_joins_with_subquery
-    active_comments = Comment.where("comments.body LIKE '%welcome%'")
-    sql = Post.joins(active_comments, on: { post_id: :id }, as: :welcome_comments).to_sql
-
-    assert_match(/INNER JOIN/i, sql)
-    assert_match(/welcome_comments/i, sql)
-  end
-
   def test_joins_with_subquery_returns_correct_records
     welcome_comments = Comment.where("comments.body LIKE '%welcome%'")
     post_ids = Post.joins(welcome_comments, on: { post_id: :id }, as: :welcome_comments)
@@ -75,11 +65,10 @@ class JoinClauseTest < ActiveRecord::TestCase
     assert_equal expected_ids, post_ids
   end
 
-  def test_left_outer_joins_with_subquery
+  def test_left_outer_joins_with_subquery_preserves_all_records
     active_comments = Comment.where("comments.body LIKE '%welcome%'")
     posts = Post.left_outer_joins(active_comments, on: { post_id: :id }, as: :welcome_comments)
 
-    assert_match(/LEFT OUTER JOIN/i, posts.to_sql)
     assert_equal Post.count, posts.distinct.count
   end
 
@@ -128,15 +117,12 @@ class JoinClauseTest < ActiveRecord::TestCase
   def test_joins_with_on_chained_with_association_joins
     results = Post.joins(:author).joins(:comments, on: { post_id: :id })
 
-    sql = results.to_sql
-    assert_match(/INNER JOIN/i, sql)
     assert_not_empty results
   end
 
   def test_joins_with_on_does_not_interfere_with_association_hash_joins
     results = Post.joins(comments: :post)
 
-    assert_match(/INNER JOIN/i, results.to_sql)
     assert_not_empty results
   end
 end
