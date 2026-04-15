@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -l \"\\\\.joins\\\\|\\\\.left_joins\\\\|\\\\.left_outer_joins\\\\|inner.*join\\\\|outer.*join\" /Users/john/dev/rails/activerecord/test/cases/associations/*.rb)",
+      "Bash(find /Users/john/dev/rails/activerecord/lib/active_record -name \"*.rb\" -exec grep -l \"MULTI_VALUE_METHODS\\\\s*=\" {} ;)",
+      "Bash(ls /Users/john/dev/rails/activerecord/lib/arel/nodes/*.rb)"
+    ]
+  },
+  "enableAllProjectMcpServers": false
+}
